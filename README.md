@@ -77,9 +77,12 @@ Logs and state live in `$XDG_RUNTIME_DIR/aws-vpn/` (`openvpn.log`,
 
 `contrib/omarchy-bar-widget/` is an Omarchy (Quickshell) bar plugin showing
 connection state; left-click toggles, right-click opens the OpenVPN log.
-Copy it to `~/.config/omarchy/plugins/<namespace>.aws-vpn/`, set `id` /
-`moduleName` to match, and adjust the `vpnctl` path if your clone lives
-somewhere other than `~/aws-vpn`.
+It is also published as a standalone plugin repo at
+[dhasdiel/omarchy-aws-vpn](https://github.com/dhasdiel/omarchy-aws-vpn) —
+install that one if you want marketplace updates. To use the copy here
+directly, put it in `~/.config/omarchy/plugins/<namespace>.aws-vpn/`, set
+`id` / `moduleName` to match, and adjust the `vpnctl` path if your clone
+lives somewhere other than `~/aws-vpn`.
 
 For any other status bar: `vpnctl status` prints `up`, `connecting` or
 `down`, so it is trivial to wire into waybar/polybar/i3bar.
