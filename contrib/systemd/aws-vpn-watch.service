@@ -1,0 +1,14 @@
+# systemd user service: notify when the VPN tunnel drops without `vpnctl down`.
+# Install: cp this file to ~/.config/systemd/user/ and adjust ExecStart to your
+# clone path, then `systemctl --user enable --now aws-vpn-watch`.
+[Unit]
+Description=AWS VPN disconnect watcher
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/aws-vpn/vpnctl watch
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

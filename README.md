@@ -67,7 +67,17 @@ one-time install prompt, connecting never asks for your password again.
 ./vpnctl down      # stop the tunnel (via the management socket, no password)
 ./vpnctl toggle    # up if down, down if up
 ./vpnctl status    # prints: up | connecting | down
+./vpnctl watch     # long-running watcher: notifies if the tunnel drops
 ./connect.sh       # same flow in a terminal; Ctrl+C to disconnect
+```
+
+To get a "Connection lost" notification when the tunnel dies on its own
+(network change, crash), install the user service:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp contrib/systemd/aws-vpn-watch.service ~/.config/systemd/user/
+systemctl --user enable --now aws-vpn-watch
 ```
 
 Logs and state live in `$XDG_RUNTIME_DIR/aws-vpn/` (`openvpn.log`,

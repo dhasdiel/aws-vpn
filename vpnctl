@@ -4,6 +4,7 @@
 #   vpnctl down    stop the tunnel (no password: uses the management socket)
 #   vpnctl toggle  up if down, down otherwise
 #   vpnctl status  prints: up | connecting | down
+#   vpnctl watch   run forever; notify when the tunnel drops unexpectedly
 # Designed to be called from a bar widget (see contrib/). connect.sh is the
 # terminal version.
 set -uo pipefail
@@ -17,6 +18,7 @@ CONF="$DIR/vpn.conf"
 RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/aws-vpn"
 SOCK="$RUN/mgmt.sock"
 CONNECTING="$RUN/connecting"
+DOWN_REQUESTED="$RUN/down-requested"
 LOG="$RUN/vpnctl.log"
 
 # Per-installation settings written by setup.sh (see config.example).
@@ -81,6 +83,7 @@ up() {
   [ "$(status)" = down ] || { echo "already $(status)"; return 0; }
   [ -x "$OVPN" ] && [ -x "$ROOT_OVPN" ] || { notify "Missing OpenVPN binary - run build.sh then install.sh"; return 1; }
   [ -n "${VPN_HOST:-}" ] || { notify "Missing $DIR/config - run ./setup.sh <profile.ovpn>"; return 1; }
+  rm -f "$DOWN_REQUESTED"
   echo $$ > "$CONNECTING"
   local creds="$RUN/creds" saml="$RUN/saml-response.txt" srv out url sid server_pid
   cleanup() { rm -f "$CONNECTING" "$saml"; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null; true; }
@@ -147,6 +150,7 @@ PY
 }
 
 down() {
+  touch "$DOWN_REQUESTED"
   if mgmt "signal SIGTERM" >/dev/null 2>&1; then
     for _ in $(seq 10); do [ -S "$SOCK" ] || break; sleep 0.5; done
     rm -f "$SOCK" 2>/dev/null
@@ -159,10 +163,29 @@ down() {
   fi
 }
 
+# Poll the state and notify on unexpected transitions. A drop is "unexpected"
+# when no down was requested through vpnctl (marked via $DOWN_REQUESTED).
+watch() {
+  local prev cur
+  prev=$(status)
+  while sleep 3; do
+    cur=$(status)
+    if [ "$cur" = down ] && [ "$prev" = up ]; then
+      if [ -f "$DOWN_REQUESTED" ]; then
+        rm -f "$DOWN_REQUESTED"
+      else
+        notify "Connection lost"
+      fi
+    fi
+    prev=$cur
+  done
+}
+
 case "${1:-status}" in
   up)     up >>"$LOG" 2>&1 ;;
   down)   down ;;
   toggle) if [ "$(status)" = down ]; then setsid "$DIR/vpnctl" up </dev/null >/dev/null 2>&1 & else down; fi ;;
   status) status ;;
-  *)      echo "usage: vpnctl up|down|toggle|status"; exit 2 ;;
+  watch)  watch ;;
+  *)      echo "usage: vpnctl up|down|toggle|status|watch"; exit 2 ;;
 esac
