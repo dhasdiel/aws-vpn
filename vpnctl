@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# Control an AWS Client VPN (SAML) connection without a terminal.
+#   vpnctl up      SAML login in the browser, then start the tunnel
+#   vpnctl down    stop the tunnel (no password: uses the management socket)
+#   vpnctl toggle  up if down, down otherwise
+#   vpnctl status  prints: up | connecting | down
+# Designed to be called from a bar widget (see contrib/). connect.sh is the
+# terminal version.
+set -uo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OVPN="$DIR/openvpn"
+# Root-owned copy installed by install.sh. The polkit rule it installs makes
+# pkexec run this exact path without a password prompt.
+ROOT_OVPN="/usr/local/bin/aws-vpn-openvpn"
+CONF="$DIR/vpn.conf"
+RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/aws-vpn"
+SOCK="$RUN/mgmt.sock"
+CONNECTING="$RUN/connecting"
+LOG="$RUN/vpnctl.log"
+
+# Per-installation settings written by setup.sh (see config.example).
+[ -f "$DIR/config" ] && . "$DIR/config"
+NAME="${VPN_NAME:-AWS VPN}"
+PORT="${PORT:-443}"
+PROTO="${PROTO:-udp}"
+
+mkdir -p "$RUN" && chmod 700 "$RUN"
+
+notify() { notify-send -a "AWS VPN" -i network-vpn "$NAME" "$1" 2>/dev/null || true; }
+
+# Send one command to the OpenVPN management socket and print the reply.
+mgmt() {
+  [ -S "$SOCK" ] || return 1
+  python3 - "$SOCK" "$1" <<'PY'
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(2)
+try:
+    s.connect(sys.argv[1])
+    s.sendall((sys.argv[2] + "\n").encode())
+    time.sleep(0.2)
+    data = b""
+    try:
+        while True:
+            chunk = s.recv(4096)
+            if not chunk: break
+            data += chunk
+            if b"\nEND" in data or b"SUCCESS" in data or b"ERROR" in data: break
+    except socket.timeout:
+        pass
+    print(data.decode(errors="replace"))
+except OSError:
+    sys.exit(1)
+PY
+}
+
+connecting_alive() {
+  [ -f "$CONNECTING" ] && kill -0 "$(cat "$CONNECTING" 2>/dev/null)" 2>/dev/null
+}
+
+status() {
+  if out=$(mgmt "state" 2>/dev/null) && [ -n "$out" ]; then
+    if grep -q ',CONNECTED,' <<<"$out"; then echo up; else echo connecting; fi
+  elif connecting_alive; then
+    echo connecting
+  elif terminal_pid >/dev/null; then
+    echo up
+  else
+    echo down
+  fi
+}
+
+# A tunnel started from connect.sh in a terminal, without a reachable
+# management socket.
+terminal_pid() {
+  pgrep -f -- "openvpn --config (vpn.conf|$CONF) .*--remote .* $PORT" | head -1 | grep .
+}
+
+up() {
+  [ "$(status)" = down ] || { echo "already $(status)"; return 0; }
+  [ -x "$OVPN" ] && [ -x "$ROOT_OVPN" ] || { notify "Missing OpenVPN binary - run build.sh then install.sh"; return 1; }
+  [ -n "${VPN_HOST:-}" ] || { notify "Missing $DIR/config - run ./setup.sh <profile.ovpn>"; return 1; }
+  echo $$ > "$CONNECTING"
+  local creds="$RUN/creds" saml="$RUN/saml-response.txt" srv out url sid server_pid
+  cleanup() { rm -f "$CONNECTING" "$saml"; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null; true; }
+  trap cleanup RETURN
+  rm -f "$saml" "$creds"
+
+  srv=$(getent ahostsv4 "$(openssl rand -hex 12).${VPN_HOST}" | awk 'NR==1{print $1}')
+  [ -n "$srv" ] || { notify "Could not resolve the VPN endpoint (no internet?)"; return 1; }
+
+  # Receives the SAML POST from the browser on 127.0.0.1:35001
+  python3 - "$saml" <<'PY' &
+import os, sys, urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+out = sys.argv[1]
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+        saml = urllib.parse.parse_qs(body).get("SAMLResponse", [""])[0]
+        self.send_response(200); self.end_headers()
+        if not saml:
+            self.wfile.write(b"No SAMLResponse in request"); return
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.write(fd, urllib.parse.quote_plus(saml).encode()); os.close(fd)
+        self.wfile.write(b"VPN login OK - you can close this tab.")
+        raise SystemExit
+    def log_message(self, *a): pass
+try:
+    HTTPServer(("127.0.0.1", 35001), H).serve_forever()
+except SystemExit:
+    pass
+PY
+  server_pid=$!
+
+  out=$("$OVPN" --config "$CONF" --verb 3 --proto "$PROTO" --remote "$srv" "$PORT" \
+        --auth-user-pass <(printf "%s\n%s\n" "N/A" "ACS::35001") 2>&1 | grep AUTH_FAILED,CRV1)
+  url=$(grep -Eo 'https://.+' <<<"$out")
+  sid=$(awk -F : '{print $7}' <<<"$out")
+  [ -n "$url" ] || { notify "The VPN server did not return a login URL"; return 1; }
+
+  notify "Log in in the browser…"
+  xdg-open "$url" >/dev/null 2>&1 &
+  for _ in $(seq 120); do [ -s "$saml" ] && break; sleep 1; done
+  [ -s "$saml" ] || { notify "Login timed out"; return 1; }
+
+  ( umask 077; printf "%s\n%s\n" "N/A" "CRV1::${sid}::$(cat "$saml")" > "$creds" )
+  rm -f "$saml"
+
+  # Root part. With the install.sh polkit rule this needs no password.
+  # --daemon returns once started.
+  if ! pkexec "$ROOT_OVPN" --config "$CONF" --verb 3 --auth-nocache \
+        --proto "$PROTO" --remote "$srv" "$PORT" \
+        --daemon aws-vpn --log "$RUN/openvpn.log" --setenv AWSVPN_LOG "$RUN/openvpn.log" \
+        --management "$SOCK" unix --management-client-user "$USER" \
+        --script-security 2 --up "$DIR/dns.sh" --down "$DIR/dns.sh" \
+        --route-up "/usr/bin/env rm -f $creds" \
+        --auth-user-pass "$creds"; then
+    rm -f "$creds"
+    notify "Not started (password cancelled or OpenVPN failed)"
+    return 1
+  fi
+
+  for _ in $(seq 30); do [ "$(status)" = up ] && { notify "Connected"; return 0; }; sleep 1; done
+  notify "Still connecting - see $RUN/openvpn.log"
+}
+
+down() {
+  if mgmt "signal SIGTERM" >/dev/null 2>&1; then
+    for _ in $(seq 10); do [ -S "$SOCK" ] || break; sleep 0.5; done
+    rm -f "$SOCK" 2>/dev/null
+    notify "Disconnected"
+  elif connecting_alive; then
+    kill "$(cat "$CONNECTING")" 2>/dev/null; rm -f "$CONNECTING"
+    notify "Connection cancelled"
+  elif pid=$(terminal_pid); then
+    pkexec kill "$pid" && notify "Disconnected"
+  fi
+}
+
+case "${1:-status}" in
+  up)     up >>"$LOG" 2>&1 ;;
+  down)   down ;;
+  toggle) if [ "$(status)" = down ]; then setsid "$DIR/vpnctl" up </dev/null >/dev/null 2>&1 & else down; fi ;;
+  status) status ;;
+  *)      echo "usage: vpnctl up|down|toggle|status"; exit 2 ;;
+esac

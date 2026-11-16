@@ -1,0 +1,10 @@
+# Site settings for vpnctl / connect.sh.
+# Created automatically by ./setup.sh - copy this to ./config to write it by hand.
+
+# AWS Client VPN endpoint, from the 'remote' line of your .ovpn profile.
+VPN_HOST="cvpn-endpoint-xxxxxxxx.prod.clientvpn.REGION.amazonaws.com"
+PORT=443
+PROTO=udp
+
+# Name shown in desktop notifications.
+VPN_NAME="AWS VPN"

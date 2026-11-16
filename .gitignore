@@ -1,0 +1,12 @@
+# Per-installation files (written by setup.sh / downloaded from AWS)
+config
+vpn.conf
+*.ovpn
+
+# Build artifact
+openvpn
+
+# Runtime files
+saml-response.txt
+creds*
+*.log

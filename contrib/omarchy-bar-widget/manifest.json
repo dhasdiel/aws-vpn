@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "community.aws-vpn",
+  "name": "AWS VPN",
+  "version": "1.0.0",
+  "author": "aws-vpn",
+  "license": "GPL-2.0",
+  "description": "Connect and disconnect an AWS Client VPN (SAML) from the bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "AWS VPN",
+    "description": "Left click: connect or disconnect. Right click: open the VPN log.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
