@@ -11,9 +11,9 @@ set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OVPN="$DIR/openvpn"
-# Root-owned copy installed by install.sh. The polkit rule it installs makes
-# pkexec run this exact path without a password prompt.
-ROOT_OVPN="/usr/local/bin/aws-vpn-openvpn"
+# Root-owned wrapper installed by install.sh. The polkit rule it installs lets
+# pkexec run this exact path (with validated args only) without a password.
+RUN_BIN="/usr/local/libexec/aws-vpn/run"
 CONF="$DIR/vpn.conf"
 RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/aws-vpn"
 SOCK="$RUN/mgmt.sock"
@@ -76,17 +76,17 @@ status() {
 # A tunnel started from connect.sh in a terminal, without a reachable
 # management socket.
 terminal_pid() {
-  pgrep -f -- "openvpn --config (vpn.conf|$CONF) .*--remote .* $PORT" | head -1 | grep .
+  pgrep -f -- "openvpn --config \\S*vpn\\.conf .*--remote .* $PORT" | head -1 | grep .
 }
 
 up() {
   [ "$(status)" = down ] || { echo "already $(status)"; return 0; }
-  [ -x "$OVPN" ] && [ -x "$ROOT_OVPN" ] || { notify "Missing OpenVPN binary - run build.sh then install.sh"; return 1; }
+  [ -x "$OVPN" ] && [ -x "$RUN_BIN" ] || { notify "Missing OpenVPN - run build.sh then install.sh"; return 1; }
   [ -n "${VPN_HOST:-}" ] || { notify "Missing $DIR/config - run ./setup.sh <profile.ovpn>"; return 1; }
   rm -f "$DOWN_REQUESTED"
   echo $$ > "$CONNECTING"
-  local creds="$RUN/creds" saml="$RUN/saml-response.txt" srv out url sid server_pid
-  cleanup() { rm -f "$CONNECTING" "$saml"; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null; true; }
+  local creds="$RUN/creds" saml="$RUN/saml-response.txt" ready="$RUN/saml-ready" srv out url sid server_pid
+  cleanup() { rm -f "$CONNECTING" "$saml" "$ready"; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null; true; }
   trap cleanup RETURN
   rm -f "$saml" "$creds"
 
@@ -94,10 +94,10 @@ up() {
   [ -n "$srv" ] || { notify "Could not resolve the VPN endpoint (no internet?)"; return 1; }
 
   # Receives the SAML POST from the browser on 127.0.0.1:35001
-  python3 - "$saml" <<'PY' &
+  python3 - "$saml" "$ready" <<'PY' &
 import os, sys, urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
-out = sys.argv[1]
+out, ready = sys.argv[1], sys.argv[2]
 class H(BaseHTTPRequestHandler):
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
@@ -111,11 +111,24 @@ class H(BaseHTTPRequestHandler):
         raise SystemExit
     def log_message(self, *a): pass
 try:
-    HTTPServer(("127.0.0.1", 35001), H).serve_forever()
+    httpd = HTTPServer(("127.0.0.1", 35001), H)
+except OSError:
+    sys.exit(1)
+open(ready, "w").close()
+try:
+    httpd.serve_forever()
 except SystemExit:
     pass
 PY
   server_pid=$!
+  # Abort if the listener failed to bind: a process already holding :35001
+  # could otherwise steal the SAMLResponse the browser is about to POST.
+  for _ in $(seq 25); do
+    [ -e "$ready" ] && break
+    kill -0 "$server_pid" 2>/dev/null || { notify "Cannot listen on 127.0.0.1:35001 - already in use"; return 1; }
+    sleep 0.2
+  done
+  rm -f "$ready"
 
   out=$("$OVPN" --config "$CONF" --verb 3 --proto "$PROTO" --remote "$srv" "$PORT" \
         --auth-user-pass <(printf "%s\n%s\n" "N/A" "ACS::35001") 2>&1 | grep AUTH_FAILED,CRV1)
@@ -131,15 +144,9 @@ PY
   ( umask 077; printf "%s\n%s\n" "N/A" "CRV1::${sid}::$(cat "$saml")" > "$creds" )
   rm -f "$saml"
 
-  # Root part. With the install.sh polkit rule this needs no password.
-  # --daemon returns once started.
-  if ! pkexec "$ROOT_OVPN" --config "$CONF" --verb 3 --auth-nocache \
-        --proto "$PROTO" --remote "$srv" "$PORT" \
-        --daemon aws-vpn --log "$RUN/openvpn.log" --setenv AWSVPN_LOG "$RUN/openvpn.log" \
-        --management "$SOCK" unix --management-client-user "$USER" \
-        --script-security 2 --up "$DIR/dns.sh" --down "$DIR/dns.sh" \
-        --route-up "/usr/bin/env rm -f $creds" \
-        --auth-user-pass "$creds"; then
+  # Root part: the root-owned wrapper fixes all openvpn argv; with the
+  # install.sh polkit rule this needs no password. --daemon returns at once.
+  if ! pkexec "$RUN_BIN" "$srv" "$PORT" "$PROTO"; then
     rm -f "$creds"
     notify "Not started (password cancelled or OpenVPN failed)"
     return 1

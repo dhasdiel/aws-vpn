@@ -50,15 +50,14 @@ git clone <this-repo> ~/aws-vpn && cd ~/aws-vpn
 
 `install.sh` does two things:
 
-- Installs a **root-owned** copy of the binary at
-  `/usr/local/bin/aws-vpn-openvpn`
+- Installs a **root-owned** copy of everything OpenVPN executes or reads as
+  root — the binary, the `run` wrapper, the `dns.sh` hook and `vpn.conf` —
+  under `/usr/local/libexec/aws-vpn/`
 - Installs `/etc/polkit-1/rules.d/49-aws-vpn.rules`, which lets `pkexec` run
-  **that exact path only** without a password for your user / wheel / sudo
-  members
+  **that wrapper only** without a password — for your user and wheel/sudo
+  members — and only with a whitelisted argument shape
 
-Because the rule is scoped to a root-owned file, it cannot be abused to run
-arbitrary code as root — the file cannot be replaced without root. After the
-one-time install prompt, connecting never asks for your password again.
+Re-run `install.sh` after rebuilding or changing `vpn.conf`.
 
 ## Usage
 
@@ -104,7 +103,8 @@ For any other status bar: `vpnctl status` prints `up`, `connecting` or
 | `build.sh` | Download, verify (GPG), patch and build OpenVPN 2.6.12 |
 | `openvpn-v2.6.12-aws.patch` | The AWS protocol/buffer patch |
 | `setup.sh` | Turn your downloaded `.ovpn` into `config` + `vpn.conf` |
-| `install.sh` / `uninstall.sh` | Root-owned binary + polkit rule |
+| `install.sh` / `uninstall.sh` | Root-owned files + polkit rule |
+| `run` | Root-owned pkexec wrapper: fixed argv, validated args |
 | `vpnctl` | Connect/disconnect without a terminal |
 | `connect.sh` | Same flow in a terminal |
 | `dns.sh` | OpenVPN up/down hook: pushed DNS via `resolvectl` |
@@ -112,19 +112,24 @@ For any other status bar: `vpnctl status` prints `up`, `connecting` or
 
 ## Security notes
 
-- The passwordless `pkexec` rule matches only
-  `/usr/local/bin/aws-vpn-openvpn`, a root-owned file — audit `install.sh`
-  before running it.
-- The SAML response is a credential; it is written to files under
-  `$XDG_RUNTIME_DIR` or a `mktemp` file with `0600`/`umask 077` and deleted
-  as soon as the tunnel is up.
+- Passwordless `pkexec` reaches **only** `/usr/local/libexec/aws-vpn/run`, a
+  root-owned wrapper whose OpenVPN argv is fixed. Callers can pass nothing
+  but a validated remote address, port, protocol and mode — no flags, config
+  files, hooks or plugins can reach the root OpenVPN process. The polkit
+  rule additionally whitelists the exact argument shape. Audit `run` and
+  `install.sh` before installing.
+- The SAML callback listener **aborts the login if it cannot bind**
+  `127.0.0.1:35001`, so a local process that grabbed the port first cannot
+  collect the `SAMLResponse` your browser POSTs.
+- The SAML response is a credential; it is written under `$XDG_RUNTIME_DIR`
+  (`0600`/`umask 077`) and deleted as soon as the tunnel is up.
 - `vpnctl down` sends `SIGTERM` through the OpenVPN management socket owned
   by your user — no privilege needed.
 
 ## Uninstall
 
 ```sh
-./uninstall.sh   # removes /usr/local/bin/aws-vpn-openvpn + the polkit rule
+./uninstall.sh   # removes /usr/local/libexec/aws-vpn + the polkit rule
 ```
 
 ## Credits

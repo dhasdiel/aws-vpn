@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Privileged entry point for aws-vpn, invoked via pkexec.
+#
+# install.sh installs this file (together with the openvpn binary, dns.sh and
+# vpn.conf) root-owned under /usr/local/libexec/aws-vpn, and a polkit rule
+# allows passwordless pkexec for this exact path only. OpenVPN's argv is fully
+# fixed here — the caller can supply nothing but a validated remote address,
+# port, protocol and mode, so no hooks, plugins or config reach the root
+# process.
+set -euo pipefail
+export PATH=/usr/bin:/bin
+
+D=/usr/local/libexec/aws-vpn
+
+remote="${1:-}"; port="${2:-}"; proto="${3:-}"; mode="${4:-daemon}"
+[[ $remote =~ ^[0-9a-fA-F.:]{1,45}$ ]] || { echo "run: invalid remote '$remote'" >&2; exit 2; }
+[[ $port =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || { echo "run: invalid port '$port'" >&2; exit 2; }
+[[ $proto == udp || $proto == tcp ]] || { echo "run: invalid proto '$proto'" >&2; exit 2; }
+[[ $mode == daemon || $mode == foreground ]] || { echo "run: invalid mode '$mode'" >&2; exit 2; }
+
+# pkexec sets PKEXEC_UID to the calling user; everything per-user lives in
+# their runtime dir, so a different local user cannot plant files there.
+uid="${PKEXEC_UID:?must be run via pkexec}"
+user="$(id -un "$uid")"
+run="/run/user/$uid/aws-vpn"
+mkdir -p "$run" && chown "$uid:$uid" "$run"
+
+args=(
+  --config "$D/vpn.conf" --verb 3 --auth-nocache
+  --proto "$proto" --remote "$remote" "$port"
+  --setenv AWSVPN_LOG "$run/openvpn.log"
+  --management "$run/mgmt.sock" unix --management-client-user "$user"
+  --script-security 2 --up "$D/dns.sh" --down "$D/dns.sh"
+  --route-up "/usr/bin/env rm -f $run/creds"
+  --auth-user-pass "$run/creds"
+)
+[[ $mode == daemon ]] && args+=(--daemon aws-vpn --log "$run/openvpn.log")
+
+exec "$D/openvpn" "${args[@]}"
