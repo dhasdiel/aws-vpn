@@ -56,7 +56,7 @@ args=(
   --setenv AWSVPN_LOG "$state/openvpn.log"
   --management "$state/mgmt.sock" unix --management-client-user "$user"
   --script-security 2 --up "$D/dns.sh" --down "$D/dns.sh"
-  --route-up "sh -c 'rm -f \"\$0\"' $state/creds"
+  --route-up "/bin/rm -f $state/creds"
   --auth-user-pass "$state/creds"
 )
 [[ $mode == daemon ]] && args+=(--daemon aws-vpn --log "$state/openvpn.log")
