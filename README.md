@@ -66,6 +66,7 @@ Re-run `install.sh` after rebuilding or changing `vpn.conf`.
 ./vpnctl down      # stop the tunnel (via the management socket, no password)
 ./vpnctl toggle    # up if down, down if up
 ./vpnctl status    # prints: up | connecting | down
+./vpnctl log       # open the OpenVPN log
 ./vpnctl watch     # long-running watcher: notifies if the tunnel drops
 ./connect.sh       # same flow in a terminal; Ctrl+C to disconnect
 ```

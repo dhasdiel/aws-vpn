@@ -72,17 +72,9 @@ status() {
     if grep -q ',CONNECTED,' <<<"$out"; then echo up; else echo connecting; fi
   elif connecting_alive; then
     echo connecting
-  elif terminal_pid >/dev/null; then
-    echo up
   else
     echo down
   fi
-}
-
-# A tunnel started from connect.sh in a terminal, without a reachable
-# management socket.
-terminal_pid() {
-  pgrep -f -- "openvpn --config \\S*vpn\\.conf .*--remote .* $PORT" | head -1 | grep .
 }
 
 up() {
@@ -97,7 +89,7 @@ up() {
   local creds="$RUN/creds" saml="$RUN/saml-response.txt" ready="$RUN/saml-ready" srv out url sid server_pid
   cleanup() { rm -f "$CONNECTING" "$saml" "$ready"; [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null; true; }
   trap cleanup RETURN
-  rm -f "$saml" "$creds"
+  rm -f "$saml" "$creds" "$ready"
 
   srv=$(getent ahostsv4 "$(openssl rand -hex 12).${VPN_HOST}" | awk 'NR==1{print $1}')
   [ -n "$srv" ] || { notify "Could not resolve the VPN endpoint (no internet?)"; return 1; }
@@ -164,20 +156,17 @@ PY
   rm -f "$creds"   # the wrapper already copied it into the root state dir
 
   for _ in $(seq 30); do [ "$(status)" = up ] && { notify "Connected"; return 0; }; sleep 1; done
-  notify "Still connecting - see $RUN/openvpn.log"
+  notify "Still connecting - run 'vpnctl log' to view the log"
 }
 
 down() {
   touch "$DOWN_REQUESTED"
   if mgmt "signal SIGTERM" >/dev/null 2>&1; then
     for _ in $(seq 10); do [ -S "$SOCK" ] || break; sleep 0.5; done
-    rm -f "$SOCK" 2>/dev/null
     notify "Disconnected"
   elif connecting_alive; then
     kill "$(cat "$CONNECTING")" 2>/dev/null; rm -f "$CONNECTING"
     notify "Connection cancelled"
-  elif pid=$(terminal_pid); then
-    pkexec kill "$pid" && notify "Disconnected"
   fi
 }
 

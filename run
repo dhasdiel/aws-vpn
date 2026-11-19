@@ -45,7 +45,7 @@ while True:
         break
     data += chunk
 os.close(fd)
-out = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+out = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
 os.write(out, data)
 os.close(out)
 PY
@@ -56,7 +56,7 @@ args=(
   --setenv AWSVPN_LOG "$state/openvpn.log"
   --management "$state/mgmt.sock" unix --management-client-user "$user"
   --script-security 2 --up "$D/dns.sh" --down "$D/dns.sh"
-  --route-up "/usr/bin/env rm -f $state/creds"
+  --route-up "sh -c 'rm -f \"\$0\"' $state/creds"
   --auth-user-pass "$state/creds"
 )
 [[ $mode == daemon ]] && args+=(--daemon aws-vpn --log "$state/openvpn.log")
