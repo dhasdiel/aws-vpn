@@ -79,8 +79,9 @@ cp contrib/systemd/aws-vpn-watch.service ~/.config/systemd/user/
 systemctl --user enable --now aws-vpn-watch
 ```
 
-Logs and state live in `$XDG_RUNTIME_DIR/aws-vpn/` (`openvpn.log`,
-`vpnctl.log`, `mgmt.sock`).
+Logs and state live in `$XDG_RUNTIME_DIR/aws-vpn/` (`vpnctl.log`, control
+files) and `/run/aws-vpn/$UID/` (`openvpn.log`, `mgmt.sock` — root-owned,
+user-readable; open with `./vpnctl log`).
 
 ## Bar widget
 
@@ -118,9 +119,16 @@ For any other status bar: `vpnctl status` prints `up`, `connecting` or
   files, hooks or plugins can reach the root OpenVPN process. The polkit
   rule additionally whitelists the exact argument shape. Audit `run` and
   `install.sh` before installing.
-- The SAML callback listener **aborts the login if it cannot bind**
-  `127.0.0.1:35001`, so a local process that grabbed the port first cannot
-  collect the `SAMLResponse` your browser POSTs.
+- All privileged writes (log, management socket, creds copy) go to a
+  **root-owned** `/run/aws-vpn/$UID/` — your runtime dir is only ever read,
+  and the creds copy uses `O_NOFOLLOW`, so planted symlinks cannot redirect
+  root reads or writes. The log stays world-readable; `vpnctl log` opens it.
+- `./config` is parsed as data, never sourced — fields are charset-validated
+  both when `setup.sh` imports a profile and when the scripts read it.
+- The SAML callback listener **requires positive bind confirmation** before
+  the browser opens and aborts otherwise, so a local process that grabbed
+  `127.0.0.1:35001` first cannot collect the `SAMLResponse` your browser
+  POSTs.
 - The SAML response is a credential; it is written under `$XDG_RUNTIME_DIR`
   (`0600`/`umask 077`) and deleted as soon as the tunnel is up.
 - `vpnctl down` sends `SIGTERM` through the OpenVPN management socket owned

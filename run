@@ -5,8 +5,11 @@
 # vpn.conf) root-owned under /usr/local/libexec/aws-vpn, and a polkit rule
 # allows passwordless pkexec for this exact path only. OpenVPN's argv is fully
 # fixed here — the caller can supply nothing but a validated remote address,
-# port, protocol and mode, so no hooks, plugins or config reach the root
-# process.
+# port, protocol and mode.
+#
+# All privileged writes go to a root-owned state dir under /run; the calling
+# user's runtime dir is only READ, and never through a link, so files or
+# symlinks planted there cannot redirect root operations.
 set -euo pipefail
 export PATH=/usr/bin:/bin
 
@@ -18,22 +21,44 @@ remote="${1:-}"; port="${2:-}"; proto="${3:-}"; mode="${4:-daemon}"
 [[ $proto == udp || $proto == tcp ]] || { echo "run: invalid proto '$proto'" >&2; exit 2; }
 [[ $mode == daemon || $mode == foreground ]] || { echo "run: invalid mode '$mode'" >&2; exit 2; }
 
-# pkexec sets PKEXEC_UID to the calling user; everything per-user lives in
-# their runtime dir, so a different local user cannot plant files there.
 uid="${PKEXEC_UID:?must be run via pkexec}"
 user="$(id -un "$uid")"
-run="/run/user/$uid/aws-vpn"
-mkdir -p "$run" && chown "$uid:$uid" "$run"
+userrun="/run/user/$uid/aws-vpn"   # caller-owned: read-only from here
+state="/run/aws-vpn/$uid"          # root-owned: log, management socket, creds
+
+install -d -m755 "$state"
+
+# creds is written by the caller in their own runtime dir; copy it without
+# following links so a planted symlink cannot make root read another file.
+python3 - "$userrun/creds" "$state/creds" <<'PY'
+import os, stat, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
+except OSError:
+    sys.exit("run: cannot read creds")
+if not stat.S_ISREG(os.fstat(fd).st_mode):
+    sys.exit("run: creds is not a regular file")
+data = b""
+while True:
+    chunk = os.read(fd, 65536)
+    if not chunk:
+        break
+    data += chunk
+os.close(fd)
+out = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+os.write(out, data)
+os.close(out)
+PY
 
 args=(
   --config "$D/vpn.conf" --verb 3 --auth-nocache
   --proto "$proto" --remote "$remote" "$port"
-  --setenv AWSVPN_LOG "$run/openvpn.log"
-  --management "$run/mgmt.sock" unix --management-client-user "$user"
+  --setenv AWSVPN_LOG "$state/openvpn.log"
+  --management "$state/mgmt.sock" unix --management-client-user "$user"
   --script-security 2 --up "$D/dns.sh" --down "$D/dns.sh"
-  --route-up "/usr/bin/env rm -f $run/creds"
-  --auth-user-pass "$run/creds"
+  --route-up "/usr/bin/env rm -f $state/creds"
+  --auth-user-pass "$state/creds"
 )
-[[ $mode == daemon ]] && args+=(--daemon aws-vpn --log "$run/openvpn.log")
+[[ $mode == daemon ]] && args+=(--daemon aws-vpn --log "$state/openvpn.log")
 
 exec "$D/openvpn" "${args[@]}"

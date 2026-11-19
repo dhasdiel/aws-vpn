@@ -6,10 +6,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 [ -f ./config ] || { echo "Missing ./config - run ./setup.sh <profile.ovpn> (see README.md)"; exit 1; }
-. ./config
-: "${VPN_HOST:?set VPN_HOST in ./config}"
-PORT="${PORT:-443}"
-PROTO="${PROTO:-udp}"
+# Read config as data, never source it — values are validated below.
+cfg() { sed -n "s/^$1=//p" ./config | head -1 | tr -d '"'; }
+VPN_HOST="$(cfg VPN_HOST)"
+PORT="$(cfg PORT)"; [ -n "$PORT" ] || PORT=443
+PROTO="$(cfg PROTO)"; [ -n "$PROTO" ] || PROTO=udp
+[[ $VPN_HOST =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] || { echo "Invalid/missing VPN_HOST in ./config"; exit 1; }
+[[ $PORT =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT <= 65535 )) || { echo "Invalid PORT in ./config"; exit 1; }
+[[ $PROTO == udp || $PROTO == tcp ]] || { echo "Invalid PROTO in ./config"; exit 1; }
 OVPN_BIN="./openvpn"
 # Root-owned wrapper installed by install.sh; pkexec runs it (with validated
 # args only) without a password prompt.
@@ -60,13 +64,14 @@ PY
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null || true; rm -f "$SAML_FILE" "$READY"' EXIT
 
-# Abort if the listener failed to bind: a process already holding :35001
-# could otherwise steal the SAMLResponse the browser is about to POST.
+# Require positive confirmation the listener bound: a process already
+# holding :35001 could otherwise steal the browser's SAMLResponse POST.
 for _ in $(seq 25); do
   [ -e "$READY" ] && break
-  kill -0 "$SERVER_PID" 2>/dev/null || { echo "Cannot listen on 127.0.0.1:35001 - already in use" >&2; exit 1; }
+  kill -0 "$SERVER_PID" 2>/dev/null || break
   sleep 0.2
 done
+[ -e "$READY" ] || { echo "Cannot listen on 127.0.0.1:35001 - already in use" >&2; exit 1; }
 rm -f "$READY"
 
 echo "Getting SAML login URL from ${SRV}:${PORT} ..."

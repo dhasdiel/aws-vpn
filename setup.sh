@@ -10,7 +10,11 @@ cd "$(dirname "$0")"
 host=$(awk '$1 == "remote" {print $2; exit}' "$1")
 port=$(awk '$1 == "remote" {print $3; exit}' "$1")
 proto=$(awk '$1 == "proto" {print $2; exit}' "$1")
-[ -n "$host" ] || { echo "No 'remote' line found in $1"; exit 1; }
+# These fields end up in ./config and are used by the scripts — validate them
+# as data so a hostile profile cannot smuggle shell syntax through.
+[[ $host =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]] || { echo "Invalid/missing remote host in $1"; exit 1; }
+[[ -z $port || $port =~ ^[0-9]{1,5}$ ]] || { echo "Invalid remote port in $1"; exit 1; }
+[[ -z $proto || $proto == udp || $proto == tcp ]] || { echo "Invalid proto in $1"; exit 1; }
 
 grep -q '^auth-federate' "$1" || \
   echo "note: $1 has no 'auth-federate' line - this endpoint may not use SAML"
